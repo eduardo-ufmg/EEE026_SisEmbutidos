@@ -1,3 +1,5 @@
+// simulation: https://wokwi.com/projects/411926493968069633
+
 const int ledPin = 2;
 const int period = 1000;
 const int blinkInterval = period / 2;

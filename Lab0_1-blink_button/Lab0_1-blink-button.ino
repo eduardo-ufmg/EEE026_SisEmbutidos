@@ -1,3 +1,5 @@
+// simulation: https://wokwi.com/projects/411926223458480129
+
 const int ledPin = 2;
 const int buttonPin = 3;
 const int period = 1000;
@@ -9,7 +11,7 @@ bool debounce(int pin, int interval, int stateToCheck);
 void setup()
 {
   pinMode(ledPin, OUTPUT);
-  pinMode(buttonPin, INPUT);
+  pinMode(buttonPin, INPUT_PULLUP); // no need for external pull-up resistor
 
   while (not debounce(buttonPin, debounceTime, LOW)) {
     // Wait for the button to be pressed
@@ -29,7 +31,8 @@ void loop()
   delay(blinkInterval);
 }
 
-bool debounce(int pin, int interval, int stateToCheck) {
+bool debounce(int pin, int interval, int stateToCheck)
+{
   if (digitalRead(pin) == stateToCheck) {
     delay(interval);
     if (digitalRead(pin) == stateToCheck) {
