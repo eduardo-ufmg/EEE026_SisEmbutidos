@@ -30,9 +30,7 @@ A página web monitora o estado da fechadura, cadastra e reporta etiquetas cadas
 - **Placa de prototipação ESP32**:
   - \[1\] [Eletrogate](https://www.eletrogate.com/modulo-wifi-esp32-bluetooth-30-pinos)
   - \[2\] [MakerHero](https://www.makerhero.com/produto/modulo-wifi-esp32-bluetooth/)
-- **Módulo teclado numérico**: 
-  - \[1\] [Eletrogate](https://www.eletrogate.com/teclado-matricial-de-membrana-16-teclas) 
-  - \[2\] [MakerHero](https://www.makerhero.com/produto/teclado-matricial-de-membrana-12-teclas/)
+- **Módulo teclado numérico**: **Já temos**
 - **Módulo relé**: 
   - \[1\] [Eletrogate](https://www.eletrogate.com/modulo-rele-1-canal-3v-10a-com-borne-kre-para-esp32) 
   - \[2\] [MakerHero](https://www.makerhero.com/produto/modulo-rele-5v-1-canal/)
