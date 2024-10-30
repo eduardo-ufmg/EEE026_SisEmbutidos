@@ -40,6 +40,11 @@ void waitForButtonTobePressedandReleased(int buttonPin, int debounceTime, int pr
 {
   int releasedState = not pressedState;
 
+  while (!debounce(buttonPin, debounceTime, releasedState)) {
+    // make sure button is not pressed already
+  }
+  
+
   while (!debounce(buttonPin, debounceTime, pressedState)) {
     // wait for the button to be pressed
   }
