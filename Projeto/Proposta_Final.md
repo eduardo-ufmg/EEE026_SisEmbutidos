@@ -27,24 +27,16 @@ O sistema será mantido por uma bateria.
 A página web monitora o estado da fechadura, cadastra e reporta etiquetas cadastradas e apresenta um registro das ações.
 
 ### Lista de materiais:
-- **Placa de prototipação ESP32**:
-  - \[1\] [Eletrogate](https://www.eletrogate.com/modulo-wifi-esp32-bluetooth-30-pinos)
-  - \[2\] [MakerHero](https://www.makerhero.com/produto/modulo-wifi-esp32-bluetooth/)
+- **Placa de prototipação ESP32**: **Já temos**
 - **Módulo teclado numérico**: **Já temos**
 - **Módulo relé**: **Já temos**
-- **Tranca eletrônica solenóide**: 
-  - \[1\] [Eletrogate](https://www.eletrogate.com/mini-trava-eletrica-solenoide) 
-  - \[2\] [MakerHero](https://www.makerhero.com/produto/mini-trava-eletrica-solenoide-12v/)
-- **Aumentador de tensão**:
-  - \[1\] [Eletrogate](https://www.eletrogate.com/regulador-de-tensao-ajustavel-mt3608-auto-boost-step-up)
-  - \[2\] [MakerHero](https://www.makerhero.com/produto/conversor-boost-dc-step-up/)
+- **Tranca eletrônica solenóide**: **Já temos**
+- **Aumentador de tensão**: **Já temos**
 - **Bateria LiPo**: **Já temos**
 - **Carregador de bateria LiPo**: **Já temos**
 - **Fonte de tensão**: **Já temos**
 - **Leitor RFID 13.56 MHz**: **Já temos**
-- **Expansor I2C**:
-  - \[1\] [Eletrogate](https://www.eletrogate.com/ci-pcf8574-expansor-de-portas-i2c)
-  - \[2\] [MakerHero](https://www.makerhero.com/produto/ci-pcf8574-expansor-de-portas-i2c/)
+- **Expansor I2C**: **Já temos**
 - **Chave elétrica**: **Já temos**
 - **Fios**: **Já temos**
 - **Resistores**: **Já temos**
