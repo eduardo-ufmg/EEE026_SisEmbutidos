@@ -5,13 +5,13 @@
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
         <mxCell id="p9cd9EM_wSnG54zDOa8z-1" value="" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
-          <mxGeometry x="230" y="130" width="350" height="510" as="geometry" />
+          <mxGeometry x="230" y="130" width="360" height="510" as="geometry" />
         </mxCell>
         <mxCell id="p9cd9EM_wSnG54zDOa8z-2" value="&lt;b&gt;&lt;font style=&quot;font-size: 21px;&quot;&gt;ESP32&lt;/font&gt;&lt;/b&gt;" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" parent="1" vertex="1">
           <mxGeometry x="375" y="100" width="60" height="30" as="geometry" />
         </mxCell>
         <mxCell id="p9cd9EM_wSnG54zDOa8z-3" value="" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
-          <mxGeometry x="240" y="180" width="330" height="450" as="geometry" />
+          <mxGeometry x="240" y="180" width="340" height="450" as="geometry" />
         </mxCell>
         <mxCell id="p9cd9EM_wSnG54zDOa8z-4" value="&lt;b&gt;&lt;font style=&quot;font-size: 21px;&quot;&gt;RTOS&lt;/font&gt;&lt;/b&gt;" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" parent="1" vertex="1">
           <mxGeometry x="375" y="150" width="60" height="30" as="geometry" />
