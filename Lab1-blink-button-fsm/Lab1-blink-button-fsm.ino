@@ -4,7 +4,8 @@
 
 const int buttonPin = 2;
 const int ledPin = 13;
-const int blink_time = 1000;
+const int blink_led_on_time = 1000;
+const int blink_led_off_time = 2000;
 const int debounce_time = 50;
 const int led_ack_time = 250;
 const int button_pressed_val = 0;
@@ -26,8 +27,10 @@ enum LED_BLINK_STATE {
   LED_BLINK_STATE_WAIT,
   LED_BLINK_STATE_ON_BLINK,
   LED_BLINK_STATE_OFF_BLINK,
-  LED_BLINK_STATE_ON_ACK,
-  LED_BLINK_STATE_OFF_ACK,
+  LED_BLINK_STATE_ON_ACK_0,
+  LED_BLINK_STATE_OFF_ACK_0,
+  LED_BLINK_STATE_ON_ACK_1,
+  LED_BLINK_STATE_OFF_ACK_1,
 };
 
 enum BUTTON_DEBOUNCE_STATE {
@@ -41,12 +44,11 @@ enum BUTTON_DEBOUNCE_STATE {
   BUTTON_DEBOUNCE_STATE_DEBOUNCE_PRESS,
   BUTTON_DEBOUNCE_STATE_CHECK_PRESS,
   BUTTON_DEBOUNCE_STATE_PRESSED,
-  BUTTON_DEBOUNCE_STATE_FORCED_CHECK,
 };
 
-int force_button_check = 0;
-int is_button_pressed = 0;
-int blink_led = 0;
+char process_isr = 0;
+char is_button_pressed = 0;
+char blink_led = 0;
 
 volatile char button_reading = 0;
 volatile char timer_interrupt_happened = 0;
@@ -78,7 +80,6 @@ constexpr char get_prescaler_mask(unsigned prescaler);
 
 #if DEBUG
 void debug_fsm_states();
-void debug_is_button_pressed();
 #endif
 
 void setup()
@@ -86,6 +87,8 @@ void setup()
   main_state = MAIN_STATE_START;
   led_blink_state = LED_BLINK_STATE_WAIT;
   button_debounce_state = BUTTON_DEBOUNCE_STATE_WAIT;
+
+  process_isr = 1;
 
   pinMode(buttonPin, INPUT_PULLUP);
   pinMode(ledPin, OUTPUT);
@@ -130,11 +133,16 @@ void handle_main_fsm()
       break;
     case MAIN_STATE_BUTTON_RELEASED_1:
       blink_led = 1;
+
+      process_isr = 0;
+      
       main_state = MAIN_STATE_LED_BLINK;
       break;
     case MAIN_STATE_LED_BLINK:
       if (not blink_led) {
-        force_button_check = 1;
+
+        process_isr = 1;
+        
         main_state = MAIN_STATE_WAIT_BUTTON_RELEASE;
       }
       break;
@@ -155,7 +163,7 @@ void handle_led_blink_fsm()
     case LED_BLINK_STATE_WAIT:
       if (blink_led) {
         digitalWrite(ledPin, HIGH);
-        start_timer_period(blink_time);
+        start_timer_period(blink_led_on_time);
         led_blink_state = LED_BLINK_STATE_ON_BLINK;
       }
       break;
@@ -163,7 +171,7 @@ void handle_led_blink_fsm()
       if (timer_interrupt_happened) {
         timer_interrupt_happened = 0;
         digitalWrite(ledPin, LOW);
-        start_timer_period(blink_time);
+        start_timer_period(blink_led_off_time);
         led_blink_state = LED_BLINK_STATE_OFF_BLINK;
       }
       break;
@@ -172,19 +180,34 @@ void handle_led_blink_fsm()
         timer_interrupt_happened = 0;
         digitalWrite(ledPin, HIGH);
         start_timer_period(led_ack_time);
-        led_blink_state = LED_BLINK_STATE_ON_ACK;
+        led_blink_state = LED_BLINK_STATE_ON_ACK_0;
       }
       break;
-    case LED_BLINK_STATE_ON_ACK:
+    case LED_BLINK_STATE_ON_ACK_0:
       if (timer_interrupt_happened) {
         timer_interrupt_happened = 0;
         digitalWrite(ledPin, LOW);
-        led_blink_state = LED_BLINK_STATE_OFF_ACK;
+        start_timer_period(led_ack_time);
+        led_blink_state = LED_BLINK_STATE_OFF_ACK_0;
       }
       break;
-    case LED_BLINK_STATE_OFF_ACK:
+    case LED_BLINK_STATE_OFF_ACK_0:
+      if (timer_interrupt_happened) {
+        timer_interrupt_happened = 0;
+        digitalWrite(ledPin, HIGH);
+        start_timer_period(led_ack_time);
+        led_blink_state = LED_BLINK_STATE_ON_ACK_1;
+      }
+      break;
+    case LED_BLINK_STATE_ON_ACK_1:
+      if (timer_interrupt_happened) {
+        timer_interrupt_happened = 0;
+        digitalWrite(ledPin, LOW);
+        led_blink_state = LED_BLINK_STATE_OFF_ACK_1;
+      }
+      break;
+    case LED_BLINK_STATE_OFF_ACK_1:
       blink_led = 0;
-      is_button_pressed = 1;
       led_blink_state = LED_BLINK_STATE_WAIT;
       break;
     default:
@@ -195,15 +218,6 @@ void handle_led_blink_fsm()
 
 void handle_button_debounce_fsm()
 {
-  if (blink_led) {
-    button_debounce_state = BUTTON_DEBOUNCE_STATE_WAIT;
-  }
-
-  if (force_button_check) {
-    force_button_check = 0;
-    button_debounce_state = BUTTON_DEBOUNCE_STATE_FORCED_CHECK;
-  }
-
   switch (button_debounce_state) {
     case BUTTON_DEBOUNCE_STATE_WAIT:
       if (not blink_led) {
@@ -269,14 +283,6 @@ void handle_button_debounce_fsm()
       is_button_pressed = 1;
       button_debounce_state = BUTTON_DEBOUNCE_STATE_WAIT;
       break;
-    case BUTTON_DEBOUNCE_STATE_FORCED_CHECK:
-      if (button_reading == button_pressed_val) {
-        is_button_pressed = 1;
-      } else {
-        is_button_pressed = 0;
-      }
-      button_debounce_state = BUTTON_DEBOUNCE_STATE_WAIT;
-      break;
     default:
       button_debounce_state = BUTTON_DEBOUNCE_STATE_WAIT;
       break;
@@ -297,6 +303,10 @@ void configure_timer()
 
 void on_button_change()
 {
+  if (not process_isr) {
+    return;
+  }
+  
   button_reading = digitalRead(buttonPin);
   button_interrupt_happened = 1;
 }
@@ -356,8 +366,6 @@ void debug_fsm_states()
     print_fsm_state_button_debounce(button_debounce_state);
     Serial.println();
 
-    // debug_is_button_pressed();
-
     last_main_state = main_state;
     last_led_blink_state = led_blink_state;
     last_button_debounce_state = button_debounce_state;
@@ -405,11 +413,17 @@ void print_fsm_state_led_blink(LED_BLINK_STATE state)
     case LED_BLINK_STATE_OFF_BLINK:
       Serial.print("OFF_BLINK");
       break;
-    case LED_BLINK_STATE_ON_ACK:
-      Serial.print("ON_ACK");
+    case LED_BLINK_STATE_ON_ACK_0:
+      Serial.print("ON_ACK_0");
       break;
-    case LED_BLINK_STATE_OFF_ACK:
-      Serial.print("OFF_ACK");
+    case LED_BLINK_STATE_OFF_ACK_0:
+      Serial.print("OFF_ACK_0");
+      break;
+    case LED_BLINK_STATE_ON_ACK_1:
+      Serial.print("ON_ACK_1");
+      break;
+    case LED_BLINK_STATE_OFF_ACK_1:
+      Serial.print("OFF_ACK_1");
       break;
     default:
       Serial.print("UNKNOWN");
@@ -455,11 +469,5 @@ void print_fsm_state_button_debounce(BUTTON_DEBOUNCE_STATE state)
       Serial.print("UNKNOWN");
       break;
   }
-}
-
-void debug_is_button_pressed()
-{
-  Serial.print("is_button_pressed: ");
-  Serial.println(is_button_pressed);
 }
 #endif
