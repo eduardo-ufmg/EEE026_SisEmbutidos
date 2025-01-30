@@ -10,6 +10,7 @@ const int button_pressed_val = 0;
 const int button_released_val = !button_pressed_val;
 const int counter_prescaler = 1024;
 const int timer_bits = 16;
+const int max_times_to_blink = 3;
 
 const unsigned long max_count = pow(2, timer_bits) - 1;
 const unsigned long cpu_freq_hz = F_CPU;
@@ -125,7 +126,9 @@ void handle_main_fsm()
     case MAIN_STATE_BUTTON_RELEASED_0:
       if (is_button_pressed) {
         button_pressed_ticks = 0;
+        total_button_pressed_ticks = 0;
         ovf_add = 0;
+
         should_count = 1;
         main_state = MAIN_STATE_BUTTON_PRESSED;
       }
@@ -135,22 +138,8 @@ void handle_main_fsm()
         should_count = 0;
 
         total_button_pressed_ticks = (unsigned long) button_pressed_ticks + (unsigned long) ovf_add * max_count;
-
         button_pressed_time_s = (float) total_button_pressed_ticks * ticks_to_seconds;
-        times_to_blink = ceil(button_pressed_time_s);
-
-        #if DEBUG
-          Serial.print("button_pressed_ticks: ");
-          Serial.print(button_pressed_ticks);
-          Serial.print(" ovf_add: ");
-          Serial.print((int) ovf_add);
-          Serial.print(" total_button_pressed_ticks: ");
-          Serial.print(total_button_pressed_ticks);
-          Serial.print(" button_pressed_time_s: ");
-          Serial.print(button_pressed_time_s);
-          Serial.print(" times_to_blink: ");
-          Serial.println((int) times_to_blink);
-        #endif
+        times_to_blink = min(ceil(button_pressed_time_s), max_times_to_blink);
 
         main_state = MAIN_STATE_BUTTON_RELEASED_1;
       }
