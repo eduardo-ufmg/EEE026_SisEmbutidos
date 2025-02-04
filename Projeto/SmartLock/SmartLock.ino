@@ -2,6 +2,8 @@
 #include <Wire.h>
 #include <PCF8574.h>
 
+#define DEBUG 1
+
 // Define the I2C address for the PCF8574
 #define PCF8574_ADDRESS 0x20
 
@@ -23,36 +25,84 @@ char keyMap[3][3] =
   {'7', '8', '9'}
 };
 
+// Lock-related constants
+const uint8_t lockPin = 16;
+const uint32_t unlockDuration = 5000; // 5 seconds
+
 // Define the password
 const char passLength = 4;
 const char password[] = "1234";
 
-// Lock-related constants
-const uint8_t lockPin = 16;
-const uint32_t unlockDuration = 5000; // 5 seconds
+// Button-related constants
+const uint8_t buttonPin = 12;
+const uint32_t debounceDelay = 50; // 50 ms
+const bool buttonPressedState = LOW;
 
 // Password-related variables
 uint8_t passwordPos = 0;
 char enteredPassword[passLength + 1] = "";
 bool passwordCorrect = false;
 
-// Lock-related variables
-bool isLocked = true;
+// Button-related variables
+bool isButtonPressed = false;
 
 // Synchronization semaphores
 SemaphoreHandle_t lockSemaphore;
 SemaphoreHandle_t passSemaphore;
+SemaphoreHandle_t buttonSemaphore;
+SemaphoreHandle_t buttonISRSemaphore;
 
-/**
- * @brief FreeRTOS task that scans the 3x3 matrix keyboard
- *
- * This task iterates over each row by driving it LOW while keeping the other rows HIGH
- * It then reads the column pins to determine if a key is pressed. If a pressed key is
- * detected (i.e., the corresponding column reads LOW), the task prints the key value
- * to the Serial monitor. Debouncing is implemented by waiting until the key is released
- *
- * @param parameter Unused
- */
+void lockTask(void * parameter)
+{
+  for (;;) {
+
+    if (passwordCorrect) {
+
+      #if DEBUG
+      Serial.println("Unlock [password]");
+      #endif
+      
+      digitalWrite(lockPin, HIGH);
+      vTaskDelay(unlockDuration / portTICK_PERIOD_MS);
+      digitalWrite(lockPin, LOW);
+      
+      #if DEBUG
+      Serial.println("Lock");
+      #endif
+
+      // Signals that passwordCorrect was used
+      xSemaphoreGive(lockSemaphore);
+
+      // Wait until the password is reseted
+      xSemaphoreTake(passSemaphore, portMAX_DELAY);
+    }
+
+    if (isButtonPressed) {
+
+      #if DEBUG
+      Serial.println("Unlock [button]");
+      #endif
+
+      digitalWrite(lockPin, HIGH);
+      vTaskDelay(unlockDuration / portTICK_PERIOD_MS);
+      digitalWrite(lockPin, LOW);
+
+      #if DEBUG
+      Serial.println("Lock");
+      #endif
+
+      // Signals that the button was used
+      xSemaphoreGive(buttonSemaphore);
+
+      // Wait until the button is released
+      xSemaphoreTake(buttonSemaphore, portMAX_DELAY);
+    }
+
+    // Short delay before the next cycle
+    vTaskDelay(1000 / portTICK_PERIOD_MS);
+  }
+}
+
 void passwordTask(void * parameter)
 {
   for (;;) {
@@ -73,22 +123,29 @@ void passwordTask(void * parameter)
         if (pcf8574.read(colPins[col]) == LOW) {
           char key = keyMap[row][col];
 
+          #if DEBUG
           Serial.print("Key Pressed: ");
           Serial.println(key);
+          #endif
 
           enteredPassword[passwordPos] = key;
           passwordPos ++;
 
           if (passwordPos == passLength) {
 
+            #if DEBUG
             Serial.print("Entered Password: ");
             Serial.println(enteredPassword);
-            
+            #endif
+
             // Check if the entered password is correct
             passwordCorrect = (strcmp(enteredPassword, password) == 0);
 
             if (passwordCorrect) {
+
+              #if DEBUG
               Serial.println("Password correct!");
+              #endif
 
               // Wait until lockTask uses passwordCorrect
               xSemaphoreTake(lockSemaphore, portMAX_DELAY);
@@ -117,30 +174,33 @@ void passwordTask(void * parameter)
   }
 }
 
-void lockTask(void * parameter)
+void IRAM_ATTR handleButtonInterrupt() {
+  BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+  xSemaphoreGiveFromISR(buttonISRSemaphore, &xHigherPriorityTaskWoken);
+  if (xHigherPriorityTaskWoken) {
+    portYIELD_FROM_ISR();
+  }
+}
+
+void buttonTask(void * parameter)
 {
   for (;;) {
-     if (isLocked) {
-      isLocked = false;
+    // Wait indefinitely until the semaphore is given by the ISR
+    if (xSemaphoreTake(buttonISRSemaphore, portMAX_DELAY) == pdTRUE) {
+      vTaskDelay(debounceDelay / portTICK_PERIOD_MS);
 
-      if (passwordCorrect) {
-        Serial.println("Unlock");
-        digitalWrite(lockPin, HIGH);
-        vTaskDelay(unlockDuration / portTICK_PERIOD_MS);
-        digitalWrite(lockPin, LOW);
-        Serial.println("Lock");
+      if (digitalRead(buttonPin) == buttonPressedState) {
 
-        // Signals that passwordCorrect was used
-        xSemaphoreGive(lockSemaphore);
+        #if DEBUG
+        Serial.println("Button Pressed");
+        #endif
 
-        // Wait until the password is reseted
-        xSemaphoreTake(passSemaphore, portMAX_DELAY);
+        isButtonPressed = true;
+        xSemaphoreTake(buttonSemaphore, portMAX_DELAY);
+        isButtonPressed = false;
+        xSemaphoreGive(buttonSemaphore);
       }
-
-      isLocked = true;
     }
-    // Short delay before the next cycle
-    vTaskDelay(1000 / portTICK_PERIOD_MS);
   }
 }
 
@@ -160,36 +220,34 @@ void setup()
     pcf8574.write(rowPins[i], HIGH);
   }
 
+  // Configure the button pin as input
+  pinMode(buttonPin, INPUT_PULLUP);
+
+  // Attach the button interrupt
+  attachInterrupt(buttonPin, handleButtonInterrupt, FALLING);
+
   // Initialize the lock pin
   pinMode(lockPin, OUTPUT);
 
   passSemaphore = xSemaphoreCreateBinary();
   lockSemaphore = xSemaphoreCreateBinary();
+  buttonSemaphore = xSemaphoreCreateBinary();
+  buttonISRSemaphore = xSemaphoreCreateBinary();
 
-  if (passSemaphore == NULL || lockSemaphore == NULL) {
+  if (passSemaphore == NULL || lockSemaphore == NULL || buttonSemaphore == NULL || buttonISRSemaphore == NULL) {
     Serial.println("Failed to create semaphores");
     while (1);
   }
 
-  // Create the FreeRTOS task for scanning the matrix keyboard
-  xTaskCreate(
-    passwordTask,   // Task function
-    "passwordTask", // Name of the task
-    2048,           // Stack size in words
-    NULL,           // Task input parameter
-    2,              // Priority of the task
-    NULL            // Task handle
-  );
-
   // Create the FreeRTOS task for controlling the lock
-  xTaskCreate(
-    lockTask,    // Task function
-    "LockTask",  // Name of the task
-    1024,        // Stack size in words
-    NULL,        // Task input parameter
-    1,           // Priority of the task
-    NULL         // Task handle
-  );
+  xTaskCreate(lockTask, "LockTask", 1024, NULL, 1, NULL);
+
+  // Create the FreeRTOS task for scanning the matrix keyboard
+  xTaskCreate(passwordTask, "passwordTask", 2048, NULL, 2, NULL);
+
+  // Create the FreeRTOS task for handling the button
+  xTaskCreate(buttonTask, "ButtonTask", 1024, NULL, 2, NULL);
+
 }
 
 void loop() {
