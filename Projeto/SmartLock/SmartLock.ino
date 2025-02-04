@@ -27,7 +27,9 @@ char keyMap[3][3] =
 
 // Lock-related constants
 const uint8_t lockPin = 16;
-const uint32_t unlockDuration = 5000; // 5 seconds
+const uint8_t incorrectCredentialLED = 17;
+const uint32_t unlockDuration = 2000;
+const uint32_t incorrectCredentialOnDuration = 1000;
 
 // Define the password
 const char passLength = 4;
@@ -35,8 +37,11 @@ const char password[] = "1234";
 
 // Button-related constants
 const uint8_t buttonPin = 12;
-const uint32_t debounceDelay = 50; // 50 ms
+const uint32_t debounceDelay = 50;
 const bool buttonPressedState = LOW;
+
+// Common lock-related variables
+uint8_t wrongCredential = 0;
 
 // Password-related variables
 uint8_t passwordPos = 0;
@@ -55,6 +60,19 @@ SemaphoreHandle_t buttonISRSemaphore;
 void lockTask(void * parameter)
 {
   for (;;) {
+
+    if (wrongCredential) {
+
+      #if DEBUG
+      Serial.println("Incorrect Credential");
+      #endif
+
+      digitalWrite(incorrectCredentialLED, HIGH);
+      vTaskDelay(incorrectCredentialOnDuration / portTICK_PERIOD_MS);
+      digitalWrite(incorrectCredentialLED, LOW);
+
+      wrongCredential = 0;
+    }
 
     if (passwordCorrect) {
 
@@ -129,7 +147,7 @@ void passwordTask(void * parameter)
           #endif
 
           enteredPassword[passwordPos] = key;
-          passwordPos ++;
+          passwordPos++;
 
           if (passwordPos == passLength) {
 
@@ -144,11 +162,18 @@ void passwordTask(void * parameter)
             if (passwordCorrect) {
 
               #if DEBUG
-              Serial.println("Password correct!");
+              Serial.println("Password Correct");
               #endif
 
               // Wait until lockTask uses passwordCorrect
               xSemaphoreTake(lockSemaphore, portMAX_DELAY);
+            } else {
+              
+              #if DEBUG
+              Serial.println("Password Incorrect");
+              #endif
+
+              wrongCredential = 1;
             }
 
             memset(enteredPassword, 0, sizeof(enteredPassword));
@@ -228,6 +253,9 @@ void setup()
 
   // Initialize the lock pin
   pinMode(lockPin, OUTPUT);
+
+  // Initialize the incorrect credential LED pin
+  pinMode(incorrectCredentialLED, OUTPUT);
 
   passSemaphore = xSemaphoreCreateBinary();
   lockSemaphore = xSemaphoreCreateBinary();
