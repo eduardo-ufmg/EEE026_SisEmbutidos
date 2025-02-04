@@ -1,6 +1,8 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <PCF8574.h>
+#include <SPI.h>
+#include <MFRC522.h>
 
 #define DEBUG 1
 
@@ -40,6 +42,12 @@ const uint8_t buttonPin = 12;
 const uint32_t debounceDelay = 50;
 const bool buttonPressedState = LOW;
 
+// RFID-related constants
+const uint8_t RST_PIN = 13;
+const uint8_t SS_PIN = 14;
+const uint8_t registeredUID[] = {0xB3, 0x91, 0x21, 0x2D};
+const uint8_t registeredUIDSize = sizeof(registeredUID) / sizeof(*registeredUID);
+
 // Common lock-related variables
 uint8_t wrongCredential = 0;
 
@@ -51,11 +59,16 @@ bool passwordCorrect = false;
 // Button-related variables
 bool isButtonPressed = false;
 
+// RFID-related variables
+MFRC522 mfrc522(SS_PIN, RST_PIN);
+bool validRFID = false;
+
 // Synchronization semaphores
 SemaphoreHandle_t lockSemaphore;
 SemaphoreHandle_t passSemaphore;
 SemaphoreHandle_t buttonSemaphore;
 SemaphoreHandle_t buttonISRSemaphore;
+SemaphoreHandle_t rfidSemaphore;
 
 void lockTask(void * parameter)
 {
@@ -110,10 +123,31 @@ void lockTask(void * parameter)
       #endif
 
       // Signals that the button was used
-      xSemaphoreGive(buttonSemaphore);
+      xSemaphoreGive(lockSemaphore);
 
       // Wait until the button is released
       xSemaphoreTake(buttonSemaphore, portMAX_DELAY);
+    }
+
+    if (validRFID) {
+      
+      #if DEBUG
+      Serial.println("Unlock [RFID]");
+      #endif
+
+      digitalWrite(lockPin, HIGH);
+      vTaskDelay(unlockDuration / portTICK_PERIOD_MS);
+      digitalWrite(lockPin, LOW);
+
+      #if DEBUG
+      Serial.println("Lock");
+      #endif
+
+      // Signals that the RFID was used
+      xSemaphoreGive(lockSemaphore);
+
+      // Wait until the RFID is reseted
+      xSemaphoreTake(rfidSemaphore, portMAX_DELAY);
     }
 
     // Short delay before the next cycle
@@ -221,7 +255,7 @@ void buttonTask(void * parameter)
         #endif
 
         isButtonPressed = true;
-        xSemaphoreTake(buttonSemaphore, portMAX_DELAY);
+        xSemaphoreTake(lockSemaphore, portMAX_DELAY);
         isButtonPressed = false;
         xSemaphoreGive(buttonSemaphore);
       }
@@ -229,10 +263,62 @@ void buttonTask(void * parameter)
   }
 }
 
+void RFIDTask(void * parameter)
+{
+  for(;;) {
+    vTaskDelay(100 / portTICK_PERIOD_MS);
+
+    // Look for new cards
+    if (!mfrc522.PICC_IsNewCardPresent() || !mfrc522.PICC_ReadCardSerial()) {
+      continue;
+    }
+
+    // Check if the card is registered
+    bool cardMatch = true;
+    if (mfrc522.uid.size != registeredUIDSize) {
+      cardMatch = false;
+    } else {
+      for (uint8_t i = 0; i < registeredUIDSize; i++) {
+        if (mfrc522.uid.uidByte[i] != registeredUID[i]) {
+          cardMatch = false;
+          break;
+        }
+      }
+    }
+
+    if (cardMatch) {
+      #if DEBUG
+      Serial.println("RFID Card Detected");
+      #endif
+
+      validRFID = true;
+      xSemaphoreTake(lockSemaphore, portMAX_DELAY);
+      validRFID = false;
+      xSemaphoreGive(rfidSemaphore);
+    } else {
+      #if DEBUG
+      Serial.println("Invalid RFID Card");
+      #endif
+
+      wrongCredential = 1;
+    }
+
+    // Halt the PICC and stop encryption
+    mfrc522.PICC_HaltA();
+    mfrc522.PCD_StopCrypto1();
+  }
+}
+
 void setup()
 {
   // Initialize Serial communication for debugging
   Serial.begin(115200);
+
+  // Initialize the lock pin
+  pinMode(lockPin, OUTPUT);
+
+  // Initialize the incorrect credential LED pin
+  pinMode(incorrectCredentialLED, OUTPUT);
   
   // Initialize the I2C bus
   Wire.begin();
@@ -240,7 +326,7 @@ void setup()
   // Initialize the PCF8574
   pcf8574.begin();
 
-  // Configure the row pins as outputs and set them HIGH
+  // Drive all row pins HIGH
   for (uint8_t i = 0; i < 3; i++) {
     pcf8574.write(rowPins[i], HIGH);
   }
@@ -251,18 +337,18 @@ void setup()
   // Attach the button interrupt
   attachInterrupt(buttonPin, handleButtonInterrupt, FALLING);
 
-  // Initialize the lock pin
-  pinMode(lockPin, OUTPUT);
 
-  // Initialize the incorrect credential LED pin
-  pinMode(incorrectCredentialLED, OUTPUT);
+  // Initialize the RFID reader
+  SPI.begin();
+  mfrc522.PCD_Init();
 
   passSemaphore = xSemaphoreCreateBinary();
   lockSemaphore = xSemaphoreCreateBinary();
   buttonSemaphore = xSemaphoreCreateBinary();
   buttonISRSemaphore = xSemaphoreCreateBinary();
+  rfidSemaphore = xSemaphoreCreateBinary();
 
-  if (passSemaphore == NULL || lockSemaphore == NULL || buttonSemaphore == NULL || buttonISRSemaphore == NULL) {
+  if (lockSemaphore == NULL || passSemaphore == NULL || buttonSemaphore == NULL || buttonISRSemaphore == NULL || rfidSemaphore == NULL) {
     Serial.println("Failed to create semaphores");
     while (1);
   }
@@ -276,8 +362,11 @@ void setup()
   // Create the FreeRTOS task for handling the button
   xTaskCreate(buttonTask, "ButtonTask", 1024, NULL, 2, NULL);
 
+  // Create the FreeRTOS task for handling the RFID
+  xTaskCreate(RFIDTask, "RFIDTask", 2024, NULL, 2, NULL);
+
 }
 
 void loop() {
-  // The loop is left empty as the keyboard scanning is handled by the FreeRTOS task
+  // The loop is left empty as all the functionality is handled by the FreeRTOS tasks
 }
