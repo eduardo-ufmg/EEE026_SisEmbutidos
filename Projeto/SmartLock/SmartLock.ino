@@ -273,6 +273,10 @@ void RFIDTask(void * parameter)
       continue;
     }
 
+    #if DEBUG
+    Serial.println("RFID Card Detected");
+    #endif
+
     // Check if the card is registered
     bool cardMatch = true;
     if (mfrc522.uid.size != registeredUIDSize) {
@@ -288,7 +292,7 @@ void RFIDTask(void * parameter)
 
     if (cardMatch) {
       #if DEBUG
-      Serial.println("RFID Card Detected");
+      Serial.println("Valid RFID Card");
       #endif
 
       validRFID = true;
