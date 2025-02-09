@@ -1,6 +1,10 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <PCF8574.h>
+#include <SPI.h>
+#include <MFRC522.h>
+#include <WiFi.h>
+#include "WiFiCredentials.h"
 
 #define DEBUG 1
 
@@ -27,16 +31,66 @@ char keyMap[3][3] =
 
 // Lock-related constants
 const uint8_t lockPin = 16;
-const uint32_t unlockDuration = 5000; // 5 seconds
+const uint8_t incorrectCredentialLED = 17;
+const uint32_t unlockDuration = 2000;
+const uint32_t incorrectCredentialOnDuration = 1000;
+
+// const for credential length
+const uint8_t credentialLength = 4;
+
+// Event-related types and structures
+enum EventType {
+  PASSWORD,
+  BUTTON,
+  RFID,
+};
+
+union Credential
+{
+  char password[credentialLength + 1];
+  uint8_t UID[credentialLength + 1];
+  char button[credentialLength + 1];
+};
+
+typedef struct {
+  EventType type;
+  struct tm timestamp;
+  bool valid;
+  Credential credential;
+} EventLog;
+
+// Log-related constants
+const uint8_t logBufferSize = 16; // Must be a power of 2
+const uint32_t logWriteInterval = 10000;
+const char* ntpServer = "time.google.com";
+const long gmtOffset_sec = -3 * 3600;
+const int daylightOffset_sec = 0;
+
+// Log-related variables
+EventLog logBuffer[logBufferSize];
+uint8_t logBufferWritePos = 0;
+uint8_t logBufferReadPos = 0;
+
+// LogBuffer protection mutex
+SemaphoreHandle_t logMutex;
 
 // Define the password
-const char passLength = 4;
-const char password[] = "1234";
+const char passLength = credentialLength;
+const char password[] = "1379";
 
 // Button-related constants
 const uint8_t buttonPin = 12;
-const uint32_t debounceDelay = 50; // 50 ms
+const uint32_t debounceDelay = 50;
 const bool buttonPressedState = LOW;
+
+// RFID-related constants
+const uint8_t RST_PIN = 13;
+const uint8_t SS_PIN = 14;
+const uint8_t registeredUID[] = {0xB3, 0x91, 0x21, 0x2D};
+const uint8_t registeredUIDSize = sizeof(registeredUID) / sizeof(*registeredUID);
+
+// Common lock-related variables
+uint8_t wrongCredential = 0;
 
 // Password-related variables
 uint8_t passwordPos = 0;
@@ -46,20 +100,79 @@ bool passwordCorrect = false;
 // Button-related variables
 bool isButtonPressed = false;
 
+// RFID-related variables
+MFRC522 mfrc522(SS_PIN, RST_PIN);
+bool validRFID = false;
+
 // Synchronization semaphores
 SemaphoreHandle_t lockSemaphore;
 SemaphoreHandle_t passSemaphore;
 SemaphoreHandle_t buttonSemaphore;
 SemaphoreHandle_t buttonISRSemaphore;
+SemaphoreHandle_t rfidSemaphore;
+
+// Serial access mutex
+SemaphoreHandle_t serialMutex;
+
+template <typename... Args>
+void protectedSerialPrint(Args... args)
+{
+  xSemaphoreTake(serialMutex, portMAX_DELAY);
+  Serial.print(args...);
+  xSemaphoreGive(serialMutex);
+}
+
+template <typename... Args>
+void protectedSerialPrintln(Args... args)
+{
+  xSemaphoreTake(serialMutex, portMAX_DELAY);
+  Serial.println(args...);
+  xSemaphoreGive(serialMutex);
+}
+
+void insertLog(EventType type, bool valid, Credential credential)
+{
+  EventLog logEntry;
+  struct tm timeinfo;
+
+  if (!getLocalTime(&timeinfo)) {
+    protectedSerialPrintln("Failed to obtain time");
+    return;
+  }
+
+  logEntry.type = type;
+  logEntry.timestamp = timeinfo;
+  logEntry.valid = valid;
+  logEntry.credential = credential;
+
+  xSemaphoreTake(logMutex, portMAX_DELAY);
+  logBuffer[logBufferWritePos] = logEntry;
+  logBufferWritePos++; // don't need to take mod
+                       // because buffer size is a power of 2 (keep it that way)
+  xSemaphoreGive(logMutex);
+}
 
 void lockTask(void * parameter)
 {
   for (;;) {
 
+    if (wrongCredential) {
+
+      #if DEBUG
+      protectedSerialPrintln("Incorrect Credential");
+      #endif
+
+      digitalWrite(incorrectCredentialLED, HIGH);
+      vTaskDelay(incorrectCredentialOnDuration / portTICK_PERIOD_MS);
+      digitalWrite(incorrectCredentialLED, LOW);
+
+      wrongCredential = 0;
+    }
+
     if (passwordCorrect) {
 
       #if DEBUG
-      Serial.println("Unlock [password]");
+      protectedSerialPrintln("Unlock [password]");
       #endif
       
       digitalWrite(lockPin, HIGH);
@@ -67,7 +180,7 @@ void lockTask(void * parameter)
       digitalWrite(lockPin, LOW);
       
       #if DEBUG
-      Serial.println("Lock");
+      protectedSerialPrintln("Lock");
       #endif
 
       // Signals that passwordCorrect was used
@@ -80,7 +193,7 @@ void lockTask(void * parameter)
     if (isButtonPressed) {
 
       #if DEBUG
-      Serial.println("Unlock [button]");
+      protectedSerialPrintln("Unlock [button]");
       #endif
 
       digitalWrite(lockPin, HIGH);
@@ -88,18 +201,106 @@ void lockTask(void * parameter)
       digitalWrite(lockPin, LOW);
 
       #if DEBUG
-      Serial.println("Lock");
+      protectedSerialPrintln("Lock");
       #endif
 
       // Signals that the button was used
-      xSemaphoreGive(buttonSemaphore);
+      xSemaphoreGive(lockSemaphore);
 
       // Wait until the button is released
       xSemaphoreTake(buttonSemaphore, portMAX_DELAY);
     }
 
+    if (validRFID) {
+      
+      #if DEBUG
+      protectedSerialPrintln("Unlock [RFID]");
+      #endif
+
+      digitalWrite(lockPin, HIGH);
+      vTaskDelay(unlockDuration / portTICK_PERIOD_MS);
+      digitalWrite(lockPin, LOW);
+
+      #if DEBUG
+      protectedSerialPrintln("Lock");
+      #endif
+
+      // Signals that the RFID was used
+      xSemaphoreGive(lockSemaphore);
+
+      // Wait until the RFID is reseted
+      xSemaphoreTake(rfidSemaphore, portMAX_DELAY);
+    }
+
     // Short delay before the next cycle
     vTaskDelay(1000 / portTICK_PERIOD_MS);
+  }
+}
+
+void logTask(void * parameter)
+{
+  EventLog tempLogBuffer[logBufferSize];
+  bool logSent;
+
+  for (;;) {
+    vTaskDelay(logWriteInterval / portTICK_PERIOD_MS);
+
+    xSemaphoreTake(logMutex, portMAX_DELAY);
+    memcpy(tempLogBuffer, logBuffer, sizeof(logBuffer));
+    xSemaphoreGive(logMutex);
+
+    // For each unread log entry
+    while (logBufferReadPos != logBufferWritePos) {
+      // Retrieve the log entry and increment the read position
+      EventLog logEntry = tempLogBuffer[logBufferReadPos];
+
+      // Prepare logSent flag
+      logSent = false;
+
+      #if DEBUG
+      protectedSerialPrint("Log Entry: ");
+      protectedSerialPrint(logEntry.timestamp.tm_hour);
+      protectedSerialPrint(":");
+      protectedSerialPrint(logEntry.timestamp.tm_min);
+      protectedSerialPrint(":");
+      protectedSerialPrint(logEntry.timestamp.tm_sec);
+      protectedSerialPrint(" - ");
+      protectedSerialPrint(logEntry.valid ? "Valid" : "Invalid");
+      protectedSerialPrint(" - ");
+      switch (logEntry.type) {
+        case PASSWORD:
+          protectedSerialPrint("Password: ");
+          protectedSerialPrintln(logEntry.credential.password);
+          break;
+        case BUTTON:
+          protectedSerialPrint("Button: ");
+          protectedSerialPrintln(logEntry.credential.button);
+          break;
+        case RFID:
+          protectedSerialPrint("RFID: ");
+          for (uint8_t i = 0; i < registeredUIDSize; i++) {
+            protectedSerialPrint(logEntry.credential.UID[i], HEX);
+            protectedSerialPrint(" ");
+          }
+          protectedSerialPrintln();
+          break;
+      }
+      #endif
+
+      /*
+        Send the log entry
+      */
+
+      logSent = true; // Make it conditional to the log transmission being successful
+
+      if (logSent) {
+        // Increment the read position
+        xSemaphoreTake(logMutex, portMAX_DELAY);
+        logBufferReadPos++; // don't need to take mod
+                            // because buffer size is a power of 2 (keep it that way)
+        xSemaphoreGive(logMutex);
+      }
+    }
   }
 }
 
@@ -124,18 +325,18 @@ void passwordTask(void * parameter)
           char key = keyMap[row][col];
 
           #if DEBUG
-          Serial.print("Key Pressed: ");
-          Serial.println(key);
+          protectedSerialPrint("Key Pressed: ");
+          protectedSerialPrintln(key);
           #endif
 
           enteredPassword[passwordPos] = key;
-          passwordPos ++;
+          passwordPos++;
 
           if (passwordPos == passLength) {
 
             #if DEBUG
-            Serial.print("Entered Password: ");
-            Serial.println(enteredPassword);
+            protectedSerialPrint("Entered Password: ");
+            protectedSerialPrintln(enteredPassword);
             #endif
 
             // Check if the entered password is correct
@@ -144,12 +345,24 @@ void passwordTask(void * parameter)
             if (passwordCorrect) {
 
               #if DEBUG
-              Serial.println("Password correct!");
+              protectedSerialPrintln("Password Correct");
               #endif
 
               // Wait until lockTask uses passwordCorrect
               xSemaphoreTake(lockSemaphore, portMAX_DELAY);
+            } else {
+              
+              #if DEBUG
+              protectedSerialPrintln("Password Incorrect");
+              #endif
+
+              wrongCredential = 1;
             }
+
+            // Insert the log entry
+            Credential logCredential;
+            strncpy(logCredential.password, enteredPassword, passLength);
+            insertLog(PASSWORD, passwordCorrect, logCredential);
 
             memset(enteredPassword, 0, sizeof(enteredPassword));
             passwordPos = 0;
@@ -190,13 +403,8 @@ void buttonTask(void * parameter)
       vTaskDelay(debounceDelay / portTICK_PERIOD_MS);
 
       if (digitalRead(buttonPin) == buttonPressedState) {
-
-        #if DEBUG
-        Serial.println("Button Pressed");
-        #endif
-
         isButtonPressed = true;
-        xSemaphoreTake(buttonSemaphore, portMAX_DELAY);
+        xSemaphoreTake(lockSemaphore, portMAX_DELAY);
         isButtonPressed = false;
         xSemaphoreGive(buttonSemaphore);
       }
@@ -204,10 +412,99 @@ void buttonTask(void * parameter)
   }
 }
 
+void RFIDTask(void * parameter)
+{
+  for(;;) {
+    vTaskDelay(100 / portTICK_PERIOD_MS);
+
+    // Look for new cards
+    if (!mfrc522.PICC_IsNewCardPresent() || !mfrc522.PICC_ReadCardSerial()) {
+      continue;
+    }
+
+    #if DEBUG
+    protectedSerialPrintln("RFID Card Detected");
+    #endif
+
+    // Check if the card is registered
+    bool cardMatch = true;
+    if (mfrc522.uid.size != registeredUIDSize) {
+      cardMatch = false;
+    } else {
+      for (uint8_t i = 0; i < registeredUIDSize; i++) {
+        if (mfrc522.uid.uidByte[i] != registeredUID[i]) {
+          cardMatch = false;
+          break;
+        }
+      }
+    }
+
+    if (cardMatch) {
+      #if DEBUG
+      protectedSerialPrintln("Valid RFID Card");
+      #endif
+
+      validRFID = true;
+      xSemaphoreTake(lockSemaphore, portMAX_DELAY);
+      validRFID = false;
+      xSemaphoreGive(rfidSemaphore);
+    } else {
+      #if DEBUG
+      protectedSerialPrintln("Invalid RFID Card");
+      #endif
+
+      wrongCredential = 1;
+    }
+
+    // Insert the log entry
+    Credential logCredential;
+    memcpy(logCredential.UID, mfrc522.uid.uidByte, registeredUIDSize);
+    insertLog(RFID, cardMatch, logCredential);
+
+    // Halt the PICC and stop encryption
+    mfrc522.PICC_HaltA();
+    mfrc522.PCD_StopCrypto1();
+  }
+}
+
 void setup()
 {
   // Initialize Serial communication for debugging
   Serial.begin(115200);
+
+  // Initialize the lock pin
+  pinMode(lockPin, OUTPUT);
+
+  // Initialize the incorrect credential LED pin
+  pinMode(incorrectCredentialLED, OUTPUT);
+
+  // Make sure that logBufferSize is a power of 2
+  static_assert((logBufferSize & (logBufferSize - 1)) == 0, "logBufferSize must be a power of 2");
+
+  // Create the mutex for the log buffer
+  logMutex = xSemaphoreCreateMutex();
+
+  // Create the mutex for the serial access
+  serialMutex = xSemaphoreCreateMutex();
+
+  if (logMutex == NULL) {
+    Serial.println("Failed to create log mutex");
+    while (1);
+  }
+
+  // Connect to the Wi-Fi network
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  delay(10000);
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("Failed to connect to Wi-Fi");
+    while (1);
+  } else {
+    Serial.println("Connected to Wi-Fi");
+  }
+
+  // Configure the NTP client
+  configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
   
   // Initialize the I2C bus
   Wire.begin();
@@ -215,7 +512,7 @@ void setup()
   // Initialize the PCF8574
   pcf8574.begin();
 
-  // Configure the row pins as outputs and set them HIGH
+  // Drive all row pins HIGH
   for (uint8_t i = 0; i < 3; i++) {
     pcf8574.write(rowPins[i], HIGH);
   }
@@ -226,15 +523,17 @@ void setup()
   // Attach the button interrupt
   attachInterrupt(buttonPin, handleButtonInterrupt, FALLING);
 
-  // Initialize the lock pin
-  pinMode(lockPin, OUTPUT);
+  // Initialize the RFID reader
+  SPI.begin();
+  mfrc522.PCD_Init();
 
   passSemaphore = xSemaphoreCreateBinary();
   lockSemaphore = xSemaphoreCreateBinary();
   buttonSemaphore = xSemaphoreCreateBinary();
   buttonISRSemaphore = xSemaphoreCreateBinary();
+  rfidSemaphore = xSemaphoreCreateBinary();
 
-  if (passSemaphore == NULL || lockSemaphore == NULL || buttonSemaphore == NULL || buttonISRSemaphore == NULL) {
+  if (lockSemaphore == NULL || passSemaphore == NULL || buttonSemaphore == NULL || buttonISRSemaphore == NULL || rfidSemaphore == NULL) {
     Serial.println("Failed to create semaphores");
     while (1);
   }
@@ -248,8 +547,14 @@ void setup()
   // Create the FreeRTOS task for handling the button
   xTaskCreate(buttonTask, "ButtonTask", 1024, NULL, 2, NULL);
 
+  // Create the FreeRTOS task for handling the RFID
+  xTaskCreate(RFIDTask, "RFIDTask", 2048, NULL, 2, NULL);
+
+  // Create the FreeRTOS task for logging
+  xTaskCreate(logTask, "LogTask", 2048, NULL, 1, NULL);
+
 }
 
 void loop() {
-  // The loop is left empty as the keyboard scanning is handled by the FreeRTOS task
+  // The loop is left empty as all the functionality is handled by the FreeRTOS tasks
 }
